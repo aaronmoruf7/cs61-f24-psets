@@ -36,6 +36,12 @@ struct m61_statistics {
     uintptr_t heap_max;                 // largest allocated addr
 };
 
+// //free_block
+// struct free_block {
+//     size_t size;
+//     free_block* next_block;
+// };
+
 /// m61_get_statistics()
 ///    Return the current memory statistics.
 m61_statistics m61_get_statistics();

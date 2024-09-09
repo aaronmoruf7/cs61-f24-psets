@@ -6,6 +6,7 @@
 #include <cinttypes>
 #include <cassert>
 #include <sys/mman.h>
+#include <unordered_map>
 
 
 struct m61_memory_buffer {
@@ -34,27 +35,58 @@ m61_memory_buffer::~m61_memory_buffer() {
     munmap(this->buffer, this->size);
 }
 
-
-
-
 /// m61_malloc(sz, file, line)
 ///    Returns a pointer to `sz` bytes of freshly-allocated dynamic memory.
 ///    The memory is not initialized. If `sz == 0`, then m61_malloc may
 ///    return either `nullptr` or a pointer to a unique allocation.
 ///    The allocation request was made at source code location `file`:`line`.
 
+static m61_statistics gstats = {
+    .nactive = 0,
+    .active_size = 0,
+    .ntotal = 0,
+    .total_size = 0,
+    .nfail = 0,
+    .fail_size = 0,
+    .heap_min = UINTPTR_MAX,
+    .heap_max = 0
+};
+
+std::unordered_map<void*, size_t> allocation_map;
+
 void* m61_malloc(size_t sz, const char* file, int line) {
     (void) file, (void) line;   // avoid uninitialized variable warnings
-    // Your code here.
-    if (default_buffer.pos + sz > default_buffer.size) {
+
+    if (default_buffer.pos + sz > default_buffer.size || default_buffer.pos + sz < default_buffer.pos) {
         // Not enough space left in default buffer for allocation
+        // Check for overflow
+        ++ gstats.nfail;
+        gstats.fail_size += sz;
         return nullptr;
     }
 
     // Otherwise there is enough space; claim the next `sz` bytes
     void* ptr = &default_buffer.buffer[default_buffer.pos];
+
+    if ((uintptr_t) ptr < gstats.heap_min){
+        gstats.heap_min = (uintptr_t) ptr;
+    }
+
+    if ((uintptr_t) ptr > gstats.heap_max){
+        gstats.heap_max = (uintptr_t) (ptr) + sz - 1;;
+    }
+
+
+    allocation_map[ptr] = sz;
+
     default_buffer.pos += sz;
+    gstats.total_size += sz;
+    gstats.active_size += sz;
+    ++gstats.nactive;
+    ++gstats.ntotal;
+
     return ptr;
+
 }
 
 
@@ -67,7 +99,32 @@ void* m61_malloc(size_t sz, const char* file, int line) {
 void m61_free(void* ptr, const char* file, int line) {
     // avoid uninitialized variable warnings
     (void) ptr, (void) file, (void) line;
-    // Your code here. The handout code does nothing!
+
+    if (ptr == nullptr ){
+        return;
+    }
+
+    //make sure ptr is at an active allocation
+    if(ptr < default_buffer.buffer || ptr > (default_buffer.buffer + default_buffer.pos)){
+        fprintf (stdout, "Invalid pointer");
+        return; 
+    }
+
+    auto it = allocation_map.find(ptr);
+    if (it == allocation_map.end()) {
+        fprintf(stdout, "Invalid free at %s:%d\n", file, line);
+        return;
+    }
+
+    size_t ptr_size = it->second;
+
+    //free space at pointer
+    memset(ptr, 0, ptr_size);
+    --gstats.nactive;
+    gstats.active_size -= ptr_size;
+
+    allocation_map.erase(ptr);
+
 }
 
 
@@ -79,7 +136,13 @@ void m61_free(void* ptr, const char* file, int line) {
 ///    also return `nullptr` if `count == 0` or `size == 0`.
 
 void* m61_calloc(size_t count, size_t sz, const char* file, int line) {
-    // Your code here (not needed for first tests).
+    if (count != 0 && sz > SIZE_MAX/count){
+        //sz * count would cause an overflow
+        ++ gstats.nfail;
+        gstats.fail_size += SIZE_MAX;
+        return nullptr;
+    }
+
     void* ptr = m61_malloc(count * sz, file, line);
     if (ptr) {
         memset(ptr, 0, count * sz);
@@ -92,11 +155,11 @@ void* m61_calloc(size_t count, size_t sz, const char* file, int line) {
 ///    Return the current memory statistics.
 
 m61_statistics m61_get_statistics() {
-    // Your code here.
     // The handout code sets all statistics to enormous numbers.
-    m61_statistics stats;
-    memset(&stats, 255, sizeof(m61_statistics));
-    return stats;
+    // m61_statistics stats;
+    // memset(&stats, 0, sizeof(m61_statistics));
+    // stats.ntotal = gstats.ntotal;
+    return gstats;
 }
 
 
