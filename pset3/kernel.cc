@@ -124,7 +124,7 @@ void* kalloc(size_t sz) {
     }
 
     int pageno = 0;
-    int page_increment = 1;
+    int page_increment = 3;
     // In the handout code, `kalloc` returns the first free page.
     // Alternate search strategies can be faster and/or expose bugs elsewhere.
     // This initialization returns a random free page:
@@ -191,6 +191,7 @@ void process_setup(pid_t pid, const char* program_name) {
     // (The program image models the process executable.)
     program_image pgm(program_name);
 
+
     // allocate and map process memory as specified in program image
     for (auto seg = pgm.begin(); seg != pgm.end(); ++seg) {
         for (uintptr_t a = round_down(seg.va(), PAGESIZE);
@@ -198,17 +199,20 @@ void process_setup(pid_t pid, const char* program_name) {
              a += PAGESIZE) {
                 
             // `a` is the process virtual address for the next code/data page
-            // map address for each segment, allowing the process to access its own memory - indentity mapping
+            // map address for each segment, allowing the process to access its own memory - kalloc mapping
+            uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
             int perm = PTE_P | PTE_W | PTE_U;
-            int r = vmiter(ptable[pid].pagetable,a).try_map(a,perm);
+            int r = vmiter(ptable[pid].pagetable,a).try_map(pa,perm);
             assert (r==0);
            
             // (The handout code requires that the corresponding physical
             // address is currently free.)
-            assert(physpages[a / PAGESIZE].refcount == 0);
-            ++physpages[a / PAGESIZE].refcount;
+            // assert(physpages[a / PAGESIZE].refcount == 0);
+            // ++physpages[a / PAGESIZE].refcount;
         }
     }
+
+    set_pagetable(ptable[pid].pagetable);
 
     // copy instructions and data from program image into process memory
     for (auto seg = pgm.begin(); seg != pgm.end(); ++seg) {
@@ -222,16 +226,19 @@ void process_setup(pid_t pid, const char* program_name) {
     // allocate and map stack segment
     // Compute process virtual address for stack page
     uintptr_t stack_addr = PROC_START_ADDR + PROC_SIZE * pid - PAGESIZE;
+    uintptr_t stack_pa = (uintptr_t) kalloc(PAGESIZE);
 
     //allow process access to the stack - indentity mapping
     int perm = PTE_P | PTE_W | PTE_U;
-    int r = vmiter(ptable[pid].pagetable,stack_addr).try_map(stack_addr,perm);
+    int r = vmiter(ptable[pid].pagetable,stack_addr).try_map(stack_pa,perm);
     assert (r==0);
     // The handout code requires that the corresponding physical address
     // is currently free.
-    assert(physpages[stack_addr / PAGESIZE].refcount == 0);
-    ++physpages[stack_addr / PAGESIZE].refcount;
+    // assert(physpages[stack_addr / PAGESIZE].refcount == 0);
+    // ++physpages[stack_addr / PAGESIZE].refcount;
     ptable[pid].regs.reg_rsp = stack_addr + PAGESIZE;
+
+    // set_pagetable(kernel_pagetable);
 
     // mark process as runnable
     ptable[pid].state = P_RUNNABLE;
@@ -386,14 +393,15 @@ uintptr_t syscall(regstate* regs) {
 //    in `u-lib.hh` (but in the handout code, it does not).
 
 int syscall_page_alloc(uintptr_t addr) {
+    uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
     int perm = PTE_P | PTE_W | PTE_U;
-    int r = vmiter(current -> pagetable, addr).try_map(addr, perm);
+    int r = vmiter(current -> pagetable, addr).try_map(pa, perm);
     assert (r ==0);
 
-    assert(physpages[addr / PAGESIZE].refcount == 0);
-    ++physpages[addr / PAGESIZE].refcount;
+    // assert(physpages[addr / PAGESIZE].refcount == 0);
+    // ++physpages[addr / PAGESIZE].refcount;
     
-    memset((void*) addr, 0, PAGESIZE);
+    memset((void*) pa, 0, PAGESIZE);
     return 0;
 }
 
