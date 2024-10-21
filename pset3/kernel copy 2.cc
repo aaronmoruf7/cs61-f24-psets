@@ -178,11 +178,7 @@ void process_setup(pid_t pid, const char* program_name) {
         uintptr_t pa = vmiter(kernel_pagetable,addr).pa();
 
         if (pa != (uintptr_t) -1){
-            if (addr != CONSOLE_ADDR){
-                perm &= ~PTE_U;
-            }
-            int r = vmiter(ptable[pid].pagetable, addr).try_map(pa, perm);
-            assert (r==0);
+            vmiter(ptable[pid].pagetable, addr).map(pa, perm);
         }
     }
     
@@ -196,12 +192,21 @@ void process_setup(pid_t pid, const char* program_name) {
         for (uintptr_t a = round_down(seg.va(), PAGESIZE);
              a < seg.va() + seg.size();
              a += PAGESIZE) {
-                
+
             // `a` is the process virtual address for the next code/data page
             // map address for each segment, allowing the process to access its own memory - indentity mapping
-            int perm = PTE_P | PTE_W | PTE_U;
-            int r = vmiter(ptable[pid].pagetable,a).try_map(a,perm);
-            assert (r==0);
+            int perm = PTE_P | PTE_U ;
+            
+            if (seg.writable()){
+                uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
+                assert (pa != 0);
+                perm |= PTE_W;
+                vmiter(ptable[pid].pagetable,a).map(pa,perm);
+            }else{
+                vmiter(ptable[pid].pagetable,a).map(a,perm);
+            }
+
+            
            
             // (The handout code requires that the corresponding physical
             // address is currently free.)
@@ -222,11 +227,13 @@ void process_setup(pid_t pid, const char* program_name) {
     // allocate and map stack segment
     // Compute process virtual address for stack page
     uintptr_t stack_addr = PROC_START_ADDR + PROC_SIZE * pid - PAGESIZE;
+    uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
+    assert (pa != 0);
 
     //allow process access to the stack - indentity mapping
     int perm = PTE_P | PTE_W | PTE_U;
-    int r = vmiter(ptable[pid].pagetable,stack_addr).try_map(stack_addr,perm);
-    assert (r==0);
+    vmiter(ptable[pid].pagetable,stack_addr).map(pa,perm);
+
     // The handout code requires that the corresponding physical address
     // is currently free.
     assert(physpages[stack_addr / PAGESIZE].refcount == 0);
@@ -386,13 +393,8 @@ uintptr_t syscall(regstate* regs) {
 //    in `u-lib.hh` (but in the handout code, it does not).
 
 int syscall_page_alloc(uintptr_t addr) {
-    int perm = PTE_P | PTE_W | PTE_U;
-    int r = vmiter(current -> pagetable, addr).try_map(addr, perm);
-    assert (r ==0);
-
     assert(physpages[addr / PAGESIZE].refcount == 0);
     ++physpages[addr / PAGESIZE].refcount;
-    
     memset((void*) addr, 0, PAGESIZE);
     return 0;
 }
