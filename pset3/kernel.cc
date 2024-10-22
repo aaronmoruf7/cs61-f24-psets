@@ -156,8 +156,23 @@ void* kalloc(size_t sz) {
 //    If `kptr == nullptr` does nothing.
 
 void kfree(void* kptr) {
-    (void) kptr;
-    assert(false /* your code here */);
+    // (void) kptr;
+    if (kptr == nullptr){
+        return;
+    }
+
+    // free memory at kptr
+    uintptr_t pa = (uintptr_t) kptr;
+    int pageno = pa/PAGESIZE;
+
+    assert(physpages[pageno].refcount > 0);
+    -- physpages[pageno].refcount;
+
+    if (physpages[pageno].refcount == 0){
+        memset((void*) pa, 0x00, PAGESIZE);
+    }
+
+
 }
 
 
@@ -200,35 +215,40 @@ void process_setup(pid_t pid, const char* program_name) {
                 
             // `a` is the process virtual address for the next code/data page
             // map address for each segment, allowing the process to access its own memory - kalloc mapping
-            uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
-            int perm = PTE_P | PTE_W | PTE_U;
+            uintptr_t pa = (uintptr_t) kalloc(PAGESIZE); //physical address to run the process
+            int perm = PTE_P | PTE_U | PTE_W ; 
             int r = vmiter(ptable[pid].pagetable,a).try_map(pa,perm);
             assert (r==0);
+            
+            uintptr_t offset =  a - seg.va();
+
+            memset((void*) pa, 0, PAGESIZE);
+            if (offset < seg.data_size()){
+                memcpy((void*) pa, seg.data() + offset, min(PAGESIZE, seg.data_size() - offset));
+            }
+            
            
-            // (The handout code requires that the corresponding physical
-            // address is currently free.)
-            // assert(physpages[a / PAGESIZE].refcount == 0);
-            // ++physpages[a / PAGESIZE].refcount;
         }
     }
 
     set_pagetable(ptable[pid].pagetable);
 
     // copy instructions and data from program image into process memory
-    for (auto seg = pgm.begin(); seg != pgm.end(); ++seg) {
-        memset((void*) seg.va(), 0, seg.size());
-        memcpy((void*) seg.va(), seg.data(), seg.data_size());
-    }
+    // for (auto seg = pgm.begin(); seg != pgm.end(); ++seg) {
+    //     memset((void*) seg.va(), 0, seg.size());
+    //     memcpy((void*) seg.va(), seg.data(), seg.data_size());
+    // }
+
 
     // mark entry point
     ptable[pid].regs.reg_rip = pgm.entry();
 
     // allocate and map stack segment
     // Compute process virtual address for stack page
-    uintptr_t stack_addr = PROC_START_ADDR + PROC_SIZE * pid - PAGESIZE;
+    uintptr_t stack_addr = MEMSIZE_VIRTUAL - PAGESIZE;
     uintptr_t stack_pa = (uintptr_t) kalloc(PAGESIZE);
 
-    //allow process access to the stack - indentity mapping
+    //allow process access to the stack
     int perm = PTE_P | PTE_W | PTE_U;
     int r = vmiter(ptable[pid].pagetable,stack_addr).try_map(stack_pa,perm);
     assert (r==0);
@@ -244,6 +264,66 @@ void process_setup(pid_t pid, const char* program_name) {
     ptable[pid].state = P_RUNNABLE;
 }
 
+// sys_fork()
+//    Fork the current process. On success, returns the child's process ID to
+//    the parent, and returns 0 to the child. On failure, returns a negative
+//    error code without creating a new process.
+
+int sys_fork(){
+
+    // look for a free process slot in the pagetabe
+    pid_t child_pid = -1;
+    for (pid_t i = 1; i < PID_MAX; i++) {
+        if (ptable[i].state == P_FREE){
+            child_pid = i;
+            break;
+        }
+    }
+    if(child_pid == -1){
+        log_printf("child_pid ");
+        return -1;}
+
+    // allocate a pagetable for the child
+    ptable[child_pid].pagetable = kalloc_pagetable();
+    if (ptable[child_pid].pagetable == nullptr){
+        log_printf("pagetable ");
+        return -1;
+    }
+
+    // copy the parent's mappings into the child page table
+    for (uintptr_t addr = 0; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE) {
+        int perm = vmiter(current -> pagetable,addr).perm();
+        uintptr_t pa = vmiter(current -> pagetable,addr).pa();
+
+        if (addr < PROC_START_ADDR){
+            int r = vmiter(ptable[child_pid].pagetable, addr).try_map(pa, perm);
+            assert (r==0);
+        }else if(((perm & PTE_PWU )== PTE_PWU) && (addr != CONSOLE_ADDR)){
+            uintptr_t new_pa = (uintptr_t) kalloc(PAGESIZE);
+            if (new_pa == (uintptr_t) nullptr) {
+                log_printf("kalloc %p", addr);
+                return -1;
+
+            }
+            memcpy((void*)new_pa,(void*)pa, PAGESIZE);
+            int r = vmiter(ptable[child_pid].pagetable, addr).try_map(new_pa, perm);
+            assert (r==0);
+        }else{
+        }
+    }  
+
+    // registers need to be copied form parent to child - regs
+    ptable[child_pid].regs = current -> regs;
+    
+    // regs.reg_rax set to 0
+    ptable[child_pid].regs.reg_rax = 0;
+
+    // state of child set to runable
+    ptable[child_pid].state = P_RUNNABLE;
+
+    // return child pid  
+    return child_pid;
+}
 
 
 // exception(regs)
@@ -377,6 +457,9 @@ uintptr_t syscall(regstate* regs) {
     case SYSCALL_PAGE_ALLOC:
         return syscall_page_alloc(current->regs.reg_rdi);
 
+    case SYSCALL_FORK:
+        return sys_fork();
+
     default:
         proc_panic(current, "Unhandled system call %ld (pid=%d, rip=%p)!\n",
                    regs->reg_rax, current->pid, regs->reg_rip);
@@ -394,6 +477,9 @@ uintptr_t syscall(regstate* regs) {
 
 int syscall_page_alloc(uintptr_t addr) {
     uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
+    if ((void*) pa == nullptr){
+        return -1;
+    }
     int perm = PTE_P | PTE_W | PTE_U;
     int r = vmiter(current -> pagetable, addr).try_map(pa, perm);
     assert (r ==0);
@@ -404,7 +490,6 @@ int syscall_page_alloc(uintptr_t addr) {
     memset((void*) pa, 0, PAGESIZE);
     return 0;
 }
-
 
 // schedule
 //    Pick the next process to run and then run it.
