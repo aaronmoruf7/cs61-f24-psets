@@ -73,8 +73,9 @@ void kernel_start(const char* command) {
         }
         // install identity mapping
         int r = vmiter(kernel_pagetable, addr).try_map(addr, perm);
-        assert(r == 0); // mappings during kernel_start MUST NOT fail
-                        // (Note that later mappings might fail!!)
+        assert(r == 0);
+        // mappings during kernel_start MUST NOT fail
+        // (Note that later mappings might fail!!)
     }
 
     // set up process descriptors
@@ -156,7 +157,6 @@ void* kalloc(size_t sz) {
 //    If `kptr == nullptr` does nothing.
 
 void kfree(void* kptr) {
-    // (void) kptr;
     if (kptr == nullptr){
         return;
     }
@@ -166,6 +166,7 @@ void kfree(void* kptr) {
     int pageno = pa/PAGESIZE;
 
     assert(physpages[pageno].refcount > 0);
+    
     -- physpages[pageno].refcount;
 
     if (physpages[pageno].refcount == 0){
@@ -174,6 +175,10 @@ void kfree(void* kptr) {
 
 
 }
+
+void free_memory_helper (void* fail_addr, x86_64_pagetable* pagetable);
+void free_ptmemory_helper ( x86_64_pagetable* pagetable);
+
 
 
 // process_setup(pid, program_name)
@@ -188,7 +193,7 @@ void process_setup(pid_t pid, const char* program_name) {
     ptable[pid].pagetable = kalloc_pagetable();
 
     // copy all the kernel mappings into the process page table
-    for (uintptr_t addr = 0; addr < MEMSIZE_PHYSICAL; addr += PAGESIZE) {
+    for (uintptr_t addr = 0; addr < PROC_START_ADDR; addr += PAGESIZE) {
         int perm = vmiter(kernel_pagetable,addr).perm();
         uintptr_t pa = vmiter(kernel_pagetable,addr).pa();
 
@@ -198,6 +203,7 @@ void process_setup(pid_t pid, const char* program_name) {
             }
             int r = vmiter(ptable[pid].pagetable, addr).try_map(pa, perm);
             assert (r==0);
+ 
         }
     }
     
@@ -216,7 +222,12 @@ void process_setup(pid_t pid, const char* program_name) {
             // `a` is the process virtual address for the next code/data page
             // map address for each segment, allowing the process to access its own memory - kalloc mapping
             uintptr_t pa = (uintptr_t) kalloc(PAGESIZE); //physical address to run the process
-            int perm = PTE_P | PTE_U | PTE_W ; 
+            int perm = PTE_P | PTE_U ; 
+
+            if (seg.writable()) {
+                perm |= PTE_W;
+            }
+
             int r = vmiter(ptable[pid].pagetable,a).try_map(pa,perm);
             assert (r==0);
             
@@ -252,6 +263,8 @@ void process_setup(pid_t pid, const char* program_name) {
     int perm = PTE_P | PTE_W | PTE_U;
     int r = vmiter(ptable[pid].pagetable,stack_addr).try_map(stack_pa,perm);
     assert (r==0);
+
+
     // The handout code requires that the corresponding physical address
     // is currently free.
     // assert(physpages[stack_addr / PAGESIZE].refcount == 0);
@@ -279,14 +292,15 @@ int sys_fork(){
             break;
         }
     }
+
     if(child_pid == -1){
-        log_printf("child_pid ");
-        return -1;}
+        return -1;
+    }
 
     // allocate a pagetable for the child
     ptable[child_pid].pagetable = kalloc_pagetable();
     if (ptable[child_pid].pagetable == nullptr){
-        log_printf("pagetable ");
+        kfree(ptable[child_pid].pagetable);
         return -1;
     }
 
@@ -297,18 +311,39 @@ int sys_fork(){
 
         if (addr < PROC_START_ADDR){
             int r = vmiter(ptable[child_pid].pagetable, addr).try_map(pa, perm);
-            assert (r==0);
+            if (r != 0){
+                free_ptmemory_helper(ptable[child_pid].pagetable);
+                return -1;
+            }
         }else if(((perm & PTE_PWU )== PTE_PWU) && (addr != CONSOLE_ADDR)){
             uintptr_t new_pa = (uintptr_t) kalloc(PAGESIZE);
             if (new_pa == (uintptr_t) nullptr) {
-                log_printf("kalloc %p", addr);
+                free_memory_helper ((void*)addr, ptable[child_pid].pagetable);
+                free_ptmemory_helper(ptable[child_pid].pagetable);
                 return -1;
 
             }
+
             memcpy((void*)new_pa,(void*)pa, PAGESIZE);
             int r = vmiter(ptable[child_pid].pagetable, addr).try_map(new_pa, perm);
-            assert (r==0);
-        }else{
+
+
+            if (r != 0){
+                kfree((void*)new_pa);
+                free_memory_helper((void*)addr, ptable[child_pid].pagetable);
+                free_ptmemory_helper(ptable[child_pid].pagetable);
+                return -1;
+            }
+
+        } else if ((perm & (PTE_P | PTE_U)) == (PTE_P | PTE_U)){
+            // Read-only or shared page: Share between parent and child
+            ++physpages[pa / PAGESIZE].refcount;
+            int r = vmiter(ptable[child_pid].pagetable, addr).try_map(pa, perm);
+            if (r != 0) {
+                free_ptmemory_helper(ptable[child_pid].pagetable);
+            return -1;
+
+            }
         }
     }  
 
@@ -323,6 +358,62 @@ int sys_fork(){
 
     // return child pid  
     return child_pid;
+}
+
+// sys_exit should mark a process as free and free all of its memory. 
+//This includes the process’s code, data, heap, and stack pages, as well 
+//as the pages used for its page directory and page table pages. 
+//The memory should become available again for future allocations.
+
+int sys_exit(){
+
+    // free process memory
+    for (uintptr_t addr = 0; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE){
+        uintptr_t pa = vmiter(current -> pagetable,addr).pa();
+        int perm = vmiter(current -> pagetable,addr).perm();
+        int x = PTE_P | PTE_U;
+        if (((perm & x) == x) && (pa != (uintptr_t) nullptr) && (addr != CONSOLE_ADDR)){
+            kfree((void*)pa);
+        }
+    }
+
+    // free page table memory
+    for (ptiter it(current -> pagetable); it.va() < MEMSIZE_VIRTUAL; it.next()) {
+        kfree((void*)it.pa());
+        
+    }
+
+    // mark the process as free
+    current -> state = P_FREE;
+    kfree(current->pagetable);
+    
+    current->regs.reg_rax = 0;
+    schedule();
+
+    // it will never reach
+    return -1;
+
+}
+
+void free_memory_helper (void* fail_addr, x86_64_pagetable* pagetable){
+    for (uintptr_t addr = 0; addr < (uintptr_t) fail_addr; addr += PAGESIZE){
+        uintptr_t pa = vmiter(pagetable,addr).pa();
+        int perm = vmiter(pagetable,addr).perm();
+        int x = PTE_P | PTE_U;
+        if (((perm & x) == x) && (pa != (uintptr_t) nullptr) && (addr != CONSOLE_ADDR)){
+                kfree((void*)pa);
+        }
+    }
+}
+
+void free_ptmemory_helper ( x86_64_pagetable* pagetable){
+    for (ptiter it(pagetable); it.va() < MEMSIZE_VIRTUAL; it.next()) {
+        kfree((void*)it.pa());
+            
+    }
+    kfree(pagetable);
+
+
 }
 
 
@@ -405,7 +496,6 @@ void exception(regstate* regs) {
 
 int syscall_page_alloc(uintptr_t addr);
 
-
 // syscall(regs)
 //    Handle a system call initiated by a `syscall` instruction.
 //    The process’s register values at system call time are accessible in
@@ -460,6 +550,9 @@ uintptr_t syscall(regstate* regs) {
     case SYSCALL_FORK:
         return sys_fork();
 
+    case SYSCALL_EXIT:
+        return sys_exit();
+
     default:
         proc_panic(current, "Unhandled system call %ld (pid=%d, rip=%p)!\n",
                    regs->reg_rax, current->pid, regs->reg_rip);
@@ -478,11 +571,18 @@ uintptr_t syscall(regstate* regs) {
 int syscall_page_alloc(uintptr_t addr) {
     uintptr_t pa = (uintptr_t) kalloc(PAGESIZE);
     if ((void*) pa == nullptr){
+
         return -1;
     }
     int perm = PTE_P | PTE_W | PTE_U;
     int r = vmiter(current -> pagetable, addr).try_map(pa, perm);
-    assert (r ==0);
+    // assert (r ==0);
+
+    if (r != 0){
+        kfree((void*)pa);
+        return -1;
+    }
+    
 
     // assert(physpages[addr / PAGESIZE].refcount == 0);
     // ++physpages[addr / PAGESIZE].refcount;
