@@ -6,7 +6,7 @@
 
 // io61.cc
 //    YOUR CODE HERE!
-
+#define BLOCK_SIZE 4096
 
 // io61_file
 //    Data structure for io61 file wrappers. Add your own stuff.
@@ -74,18 +74,22 @@ int io61_readc(io61_file* f) {
 ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
     size_t nread = 0;
     while (nread != sz) {
-        int ch = io61_readc(f);
-        if (ch == EOF) {
-            break;
+        size_t to_read = sz - nread;
+        ssize_t nr = read(f->fd, buf + nread, BLOCK_SIZE < to_read ? BLOCK_SIZE : to_read);
+        
+        if (nr > 0){
+            nread += nr;
         }
-        buf[nread] = ch;
-        ++nread;
+        else if (nr == 0) {
+            break;
+        } else {
+            assert(nr == -1 && errno > 0);
+            return -1;
+        }
     }
-    if (nread != 0 || sz == 0 || errno == 0) {
-        return nread;
-    } else {
-        return -1;
-    }
+
+    return nread;
+
 }
 
 
@@ -114,16 +118,20 @@ int io61_writec(io61_file* f, int c) {
 ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
     size_t nwritten = 0;
     while (nwritten != sz) {
-        if (io61_writec(f, buf[nwritten]) == -1) {
-            break;
+        size_t to_write = sz - nwritten;
+        ssize_t nw = write(f->fd, buf + nwritten, BLOCK_SIZE < to_write ? BLOCK_SIZE : to_write);
+        if (nw > 0){
+            nwritten += nw;
         }
-        ++nwritten;
+        else if (nw == 0) {
+            break;
+        } else {
+            assert(nw == -1 && errno > 0);
+            return -1;
+        }
     }
-    if (nwritten != 0 || sz == 0) {
-        return nwritten;
-    } else {
-        return -1;
-    }
+    
+    return nwritten;
 }
 
 
