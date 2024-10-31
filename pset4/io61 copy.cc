@@ -5,6 +5,7 @@
 #include <cerrno>
 
 // io61.cc
+//    YOUR CODE HERE!
 #define BLOCK_SIZE 4096
 
 // io61_file
@@ -52,8 +53,16 @@ int io61_close(io61_file* f) {
 
 int io61_readc(io61_file* f) {
     unsigned char ch;
-    ssize_t result = io61_read(f, &ch, 1);
-    return (result == 1) ? ch : EOF;
+    ssize_t nr = read(f->fd, &ch, 1);
+    if (nr == 1) {
+        return ch;
+    } else if (nr == 0) {
+        errno = 0; // clear `errno` to indicate EOF
+        return -1;
+    } else {
+        assert(nr == -1 && errno > 0);
+        return -1;
+    }
 }
 
 size_t min(size_t a, size_t b) {
@@ -62,6 +71,37 @@ size_t min(size_t a, size_t b) {
 
 // BLOCK_SIZE < to_read ? BLOCK_SIZE : to_read min()
 
+
+// io61_read(f, buf, sz)
+//    Reads up to `sz` bytes from `f` into `buf`. Returns the number of
+//    bytes read on success. Returns 0 if end-of-file is encountered before
+//    any bytes are read, and -1 if an error is encountered before any
+//    bytes are read.
+//
+//    Note that the return value might be positive, but less than `sz`,
+//    if end-of-file or error is encountered before all `sz` bytes are read.
+//    This is called a “short read.”
+
+// ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
+//     size_t nread = 0;
+//     while (nread != sz) {
+//         size_t to_read = sz - nread;
+//         ssize_t nr = read(f->fd, buf + nread, min(BLOCK_SIZE, to_read));
+        
+//         if (nr > 0){
+//             nread += nr;
+//         }
+//         else if (nr == 0) {
+//             break;
+//         } else {
+//             assert(nr == -1 && errno > 0);
+//             return -1;
+//         }
+//     }
+
+//     return nread;
+
+// }
 
 ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
     size_t nread = 0;
@@ -102,8 +142,12 @@ ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
 
 int io61_writec(io61_file* f, int c) {
     unsigned char ch = c;
-    ssize_t result = io61_write(f, &ch, 1);
-    return (result == 1) ? 0 : -1;
+    ssize_t nw = write(f->fd, &ch, 1);
+    if (nw == 1) {
+        return 0;
+    } else {
+        return -1;
+    }
 }
 
 
@@ -116,25 +160,21 @@ int io61_writec(io61_file* f, int c) {
 
 ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
     size_t nwritten = 0;
-
     while (nwritten != sz) {
-        //if cache is full flush it
-        if (f -> cache_size == BLOCK_SIZE){
-            if(io61_flush(f) < 0){
-                return -1;
-            }
+        size_t to_write = sz - nwritten;
+        ssize_t nw = write(f->fd, buf + nwritten, BLOCK_SIZE < to_write ? BLOCK_SIZE : to_write);
+        if (nw > 0){
+            nwritten += nw;
         }
-        
-        // if cache not full, copy from buf to cache
-        size_t to_copy = min(BLOCK_SIZE - f -> cache_size, sz - nwritten);
-        memcpy(&f -> cache[f -> cache_size], buf + nwritten, to_copy);
-        f -> cache_size += to_copy;
-        nwritten += to_copy;
-
+        else if (nw == 0) {
+            break;
+        } else {
+            assert(nw == -1 && errno > 0);
+            return -1;
+        }
     }
-
+    
     return nwritten;
- 
 }
 
 
@@ -147,23 +187,8 @@ ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
 //    drop any data cached for reading.
 
 int io61_flush(io61_file* f) {
-    if (f->mode == O_WRONLY && f->cache_size > 0) {
-        size_t nwritten = 0;
-        while ((int)nwritten < f->cache_size) {
-            ssize_t nw;
-            do {
-                nw = write(f->fd, f->cache + nwritten, f->cache_size - nwritten);
-            } while (nw < 0 && (errno == EINTR || errno == EAGAIN));
-
-            if (nw < 0) {
-                return -1; 
-            }
-            nwritten += nw;
-        }
-            f->cache_size = 0;
-    }
+    (void) f;
     return 0;
-
 }
 
 
