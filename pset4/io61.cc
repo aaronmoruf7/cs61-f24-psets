@@ -16,7 +16,6 @@ struct io61_file {
     unsigned char cache [BLOCK_SIZE];    //cache 
     int cache_size = 0;
     int cache_offset = 0;
-    int cache_start = 0;
 
 };
 
@@ -172,13 +171,24 @@ int io61_flush(io61_file* f) {
 //    Returns 0 on success and -1 on failure.
 
 int io61_seek(io61_file* f, off_t off) {
+    // flush the cache if we have anything in write mode
+    if (io61_flush(f) < 0) {
+        return -1;
+    }
+
+    // set new position
     off_t r = lseek(f->fd, (off_t) off, SEEK_SET);
     // Ignore the returned offset unless it’s an error.
     if (r == -1) {
         return -1;
-    } else {
-        return 0;
-    }
+    } 
+
+    //reset cache to align with new positon
+    f -> cache_size = 0;
+    f -> cache_offset = 0;
+        
+    return 0;
+
 }
 
 
