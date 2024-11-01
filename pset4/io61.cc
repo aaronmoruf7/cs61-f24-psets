@@ -14,8 +14,9 @@ struct io61_file {
     int fd = -1;     // file descriptor
     int mode;        // open mode (O_RDONLY or O_WRONLY)
     unsigned char cache [BLOCK_SIZE];    //cache 
-    int cache_size = 0;
-    int cache_offset = 0;
+    int cache_end;
+    int cache_offset;
+    int cache_start ;
 
 };
 
@@ -59,28 +60,21 @@ size_t min(size_t a, size_t b) {
     return a < b ? a : b;
 }
 
-// BLOCK_SIZE < to_read ? BLOCK_SIZE : to_read min()
-
+int io61_fill(io61_file* f);
 
 ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
     size_t nread = 0;
-    ssize_t nr = 0;
 
     while (nread != sz) {
-        //check the cache to see if it is empty, if so then refill it
-        if (f -> cache_offset == f -> cache_size){
-            nr = read(f->fd, f -> cache, BLOCK_SIZE);
-            if (nr == 0) {
+        //check the cache to see if it is empty or already read fully, if so then refill it
+        if (f -> cache_offset == f -> cache_end){
+            if (io61_fill(f) <= 0) {
                 break;
-            } else if (nr < 0) {
-                return -1;
             }
-            f -> cache_size = nr;
-            f -> cache_offset = 0;
         }
         
         // copy from cache to buf
-        size_t to_copy = min(f -> cache_size - f -> cache_offset, sz - nread);
+        size_t to_copy = min(f -> cache_end - f -> cache_offset, sz - nread);
 
         memcpy(buf + nread, &f -> cache[f -> cache_offset], to_copy);
 
@@ -91,6 +85,57 @@ ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
 
     return nread;
  
+}
+
+int io61_fill(io61_file* f){
+    ssize_t nr = read(f->fd, f -> cache, BLOCK_SIZE);
+    if (nr == 0) {
+        return 0;
+    } else if (nr < 0) {
+        return -1;
+    }
+    f -> cache_end = nr;
+    f -> cache_offset = 0;     //reset offset
+
+    return nr;
+
+}    
+
+
+int io61_seek(io61_file* f, off_t off) {
+    if (off >= f->cache_start && off < f->cache_start + f->cache_end) {
+        f->cache_offset = off - f->cache_start; //adjust offset
+        return 0;
+    }
+    
+    if (f->mode == O_WRONLY) {
+        if (io61_flush(f) < 0) {
+            return -1;
+        }
+        off_t r = lseek(f->fd, off, SEEK_SET);
+        if (r == -1) {
+            return -1;
+        }  
+
+        f->cache_start = off;
+        f->cache_offset = 0;
+        f->cache_end = 0;
+        return 0;
+    }
+
+    if (f->mode == O_RDONLY) {
+        
+        f -> cache_start = (off / BLOCK_SIZE) * BLOCK_SIZE;
+        off_t r = lseek(f->fd, f -> cache_start, SEEK_SET);
+
+        if (r == -1 || io61_fill(f) < 0) {
+            return -1;
+        }
+        f -> cache_offset = off - f->cache_start;
+        return 0;
+    }
+    return -1;
+
 }
 
 
@@ -118,16 +163,16 @@ ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
 
     while (nwritten != sz) {
         //if cache is full flush it
-        if (f -> cache_size == BLOCK_SIZE){
+        if (f -> cache_end == BLOCK_SIZE){
             if(io61_flush(f) < 0){
                 return -1;
             }
         }
         
         // if cache not full, copy from buf to cache
-        size_t to_copy = min(BLOCK_SIZE - f -> cache_size, sz - nwritten);
-        memcpy(&f -> cache[f -> cache_size], buf + nwritten, to_copy);
-        f -> cache_size += to_copy;
+        size_t to_copy = min(BLOCK_SIZE - f -> cache_end, sz - nwritten);
+        memcpy(&f -> cache[f -> cache_end], buf + nwritten, to_copy);
+        f -> cache_end += to_copy;
         nwritten += to_copy;
 
     }
@@ -146,12 +191,12 @@ ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
 //    drop any data cached for reading.
 
 int io61_flush(io61_file* f) {
-    if (f->mode == O_WRONLY && f->cache_size > 0) {
+    if (f->mode == O_WRONLY && f->cache_end > 0) {
         size_t nwritten = 0;
-        while ((int)nwritten < f->cache_size) {
+        while ((int)nwritten < f->cache_end) {
             ssize_t nw;
             do {
-                nw = write(f->fd, f->cache + nwritten, f->cache_size - nwritten);
+                nw = write(f->fd, f->cache + nwritten, f->cache_end - nwritten);
             } while (nw < 0 && (errno == EINTR || errno == EAGAIN));
 
             if (nw < 0) {
@@ -159,34 +204,8 @@ int io61_flush(io61_file* f) {
             }
             nwritten += nw;
         }
-            f->cache_size = 0;
+        f->cache_end = 0;
     }
-    return 0;
-
-}
-
-
-// io61_seek(f, off)
-//    Changes the file pointer for file `f` to `off` bytes into the file.
-//    Returns 0 on success and -1 on failure.
-
-int io61_seek(io61_file* f, off_t off) {
-    // flush the cache if we have anything in write mode
-    if (io61_flush(f) < 0) {
-        return -1;
-    }
-
-    // set new position
-    off_t r = lseek(f->fd, (off_t) off, SEEK_SET);
-    // Ignore the returned offset unless it’s an error.
-    if (r == -1) {
-        return -1;
-    } 
-
-    //reset cache to align with new positon
-    f -> cache_size = 0;
-    f -> cache_offset = 0;
-        
     return 0;
 
 }
