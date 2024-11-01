@@ -5,7 +5,7 @@
 #include <cerrno>
 
 // io61.cc
-#define BLOCK_SIZE 4096
+#define BLOCK_SIZE 16384 //bigger cache size - optimization
 
 // io61_file
 //    Data structure for io61 file wrappers. Add your own stuff.
