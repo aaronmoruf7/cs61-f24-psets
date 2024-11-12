@@ -130,16 +130,7 @@ void command::run() {
 //    PHASE 5: Change the loop to handle background conditional chains.
 //       This may require adding another call to `fork()`!
 
-void run_command (shell_parser sec);
-
 void run_list(shell_parser sec) {
-    shell_parser line_parser(sec);
-    for (auto par = line_parser.first_command(); par; par.next_command()) {
-        run_command (par);
-    }
-}
-
-void run_command (shell_parser sec){
     command* c = new command;
     auto tok = sec.first_token();
     while (tok) {
