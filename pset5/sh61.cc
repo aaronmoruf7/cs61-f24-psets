@@ -67,9 +67,42 @@ command::~command() {
 void command::run() {
     assert(this->pid == -1);
     assert(this->args.size() > 0);
-    // Your code here!
+    
+    // create a vector of char* arguments
+    char* c_args[this->args.size() + 1];
+    for (size_t i = 0; i < args.size(); i++){
+        c_args[i] = const_cast<char*> (this->args[i].c_str());
+    }
+    c_args[this->args.size()] = nullptr;
 
-    fprintf(stderr, "command::run not done yet\n");
+    // create the child program using fork and return the pid to the parent
+    pid_t p = fork();
+    assert (p>=0);
+
+    // within the child run execv using the array of args
+    if (p == 0){
+        int r = execvp (c_args[0], c_args);
+        fprintf(stderr, "Error using execvp: pid %d, status %d\n", getpid(), r);
+        _exit(EXIT_FAILURE);
+
+    }else {
+        // set this -> pid as the child process
+        assert(p > 0);
+        this -> pid = p;
+
+        // wait for child to exit and check its status
+        int status;
+        pid_t exited_pid = waitpid(p, &status, 0);
+        assert(exited_pid == p);
+
+        // if (WIFEXITED(status)) {
+        //     fprintf(stderr, "Child exited with status %d\n",
+        //             WEXITSTATUS(status));
+        // } else {
+        //     fprintf(stderr, "Child exited abnormally [%x]\n", status);
+        // }
+
+    }
 }
 
 
