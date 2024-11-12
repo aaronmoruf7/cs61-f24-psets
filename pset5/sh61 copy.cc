@@ -207,3 +207,48 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+
+void run_command (shell_parser sec);
+
+void run_list(shell_parser sec) {
+    shell_parser line_parser(sec);
+    for (auto par = line_parser.first_command(); par; par.next_command()) {
+        run_command (par);
+    }
+}
+
+void run_command (shell_parser sec){
+    command* c = new command;
+    auto tok = sec.first_token();
+    while (tok) {
+        c->args.push_back(tok.str());
+        tok.next();
+    }
+    c->run();
+    delete c;
+}
+
+void run_conditional (shell_parser sec){
+    shell_parser line_parser(sec);
+    bool run_next = true;
+    bool cumulative_status = false;
+    for (auto par = line_parser.first_command(); par; par.next_command()) {
+        command*  last_command = nullptr;
+        if (run_next){
+            last_command = run_command(par, false);
+            cumulative_status = (last_command) && (last_command -> exit_status == 0);
+        }
+        // if &&, only run next command if cumulative command succesful
+        if (par.op() == 5){
+            run_next = cumulative_status;
+        } // if ||, only run next command if cumulative command unsuccesful
+        else if(par.op() == 6){ 
+            run_next = !cumulative_status;
+        }else{
+            run_next = true;
+        }
+        delete last_command; 
+    }     
+    
+}

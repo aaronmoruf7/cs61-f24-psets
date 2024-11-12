@@ -17,6 +17,7 @@ struct command {
     std::vector<std::string> args;
     pid_t pid = -1;      // process ID running this command, -1 if none
 
+    int exit_status;
     command();
     ~command();
 
@@ -95,12 +96,9 @@ void command::run() {
         pid_t exited_pid = waitpid(p, &status, 0);
         assert(exited_pid == p);
 
-        // if (WIFEXITED(status)) {
-        //     fprintf(stderr, "Child exited with status %d\n",
-        //             WEXITSTATUS(status));
-        // } else {
-        //     fprintf(stderr, "Child exited abnormally [%x]\n", status);
-        // }
+        if (WIFEXITED(status)) {
+            this -> exit_status = WEXITSTATUS(status);
+        } 
 
     }
 }
@@ -130,16 +128,43 @@ void command::run() {
 //    PHASE 5: Change the loop to handle background conditional chains.
 //       This may require adding another call to `fork()`!
 
-void run_command (shell_parser sec);
+command* run_command (shell_parser, bool);
+void run_conditional (shell_parser sec);
 
 void run_list(shell_parser sec) {
     shell_parser line_parser(sec);
-    for (auto par = line_parser.first_command(); par; par.next_command()) {
-        run_command (par);
+    shell_parser condpar = line_parser.first_conditional();
+    while (condpar) {
+        run_conditional(condpar);
+        condpar.next_conditional();
     }
 }
 
-void run_command (shell_parser sec){
+void run_conditional (shell_parser sec){
+    shell_parser line_parser(sec);
+    bool run_next = true;
+    bool cumulative_status = false;
+    for (auto par = line_parser.first_command(); par; par.next_command()) {
+        command*  last_command = nullptr;
+        if (run_next){
+            last_command = run_command(par, false);
+            cumulative_status = (last_command) && (last_command -> exit_status == 0);
+        }
+        // if &&, only run next command if cumulative command succesful
+        if (par.op() == 5){
+            run_next = cumulative_status;
+        } // if ||, only run next command if cumulative command unsuccesful
+        else if(par.op() == 6){ 
+            run_next = !cumulative_status;
+        }else{
+            run_next = true;
+        }
+        delete last_command; 
+    }     
+    
+}
+
+command* run_command (shell_parser sec, bool auto_delete = true){
     command* c = new command;
     auto tok = sec.first_token();
     while (tok) {
@@ -147,7 +172,13 @@ void run_command (shell_parser sec){
         tok.next();
     }
     c->run();
-    delete c;
+    if (auto_delete){
+        delete c;
+        return nullptr;
+    }else{
+        return c;
+    }
+    
 }
 
 
