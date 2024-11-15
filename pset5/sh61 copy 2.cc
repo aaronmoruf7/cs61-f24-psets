@@ -16,13 +16,12 @@
 struct command {
     std::vector<std::string> args;
     pid_t pid = -1;      // process ID running this command, -1 if none
-    int pipe_in = -1;
-    int pipe_out = -1;
+
     int exit_status;
     command();
     ~command();
 
-    void run(bool);
+    void run();
 };
 
 
@@ -66,7 +65,7 @@ command::~command() {
 //       Draw pictures!
 //    PHASE 7: Handle redirections.
 
-void command::run(bool wait_for_completion = true) {
+void command::run() {
     assert(this->pid == -1);
     assert(this->args.size() > 0);
     
@@ -83,20 +82,6 @@ void command::run(bool wait_for_completion = true) {
 
     // within the child run execv using the array of args
     if (p == 0){
-
-        // redirect input to std in
-        if (this -> pipe_in != -1){
-            dup2(this -> pipe_in, 0);
-            close (this -> pipe_in);
-        }
-
-        // redirect ouput to std out
-        if (this -> pipe_out != -1){
-            dup2(this -> pipe_out, 1);
-            close (this -> pipe_out);
-        }
-
-        // now we call execv because the environment is set up properly
         int r = execvp (c_args[0], c_args);
         fprintf(stderr, "Error using execvp: pid %d, status %d\n", getpid(), r);
         _exit(EXIT_FAILURE);
@@ -106,21 +91,14 @@ void command::run(bool wait_for_completion = true) {
         assert(p > 0);
         this -> pid = p;
 
-        // // close pipes in parent
-        if (pipe_in != -1) close (this -> pipe_in);
-        if (pipe_out != -1) close (this -> pipe_out);
-
         // wait for child to exit and check its status
-        if (wait_for_completion){
-            int status;
-            pid_t exited_pid = waitpid(p, &status, 0);
-            assert(exited_pid == p);
+        int status;
+        pid_t exited_pid = waitpid(p, &status, 0);
+        assert(exited_pid == p);
 
-            if (WIFEXITED(status)) {
-                this -> exit_status = WEXITSTATUS(status);
-            } 
-        }
-        
+        if (WIFEXITED(status)) {
+            this -> exit_status = WEXITSTATUS(status);
+        } 
 
     }
 }
@@ -150,79 +128,25 @@ void command::run(bool wait_for_completion = true) {
 //    PHASE 5: Change the loop to handle background conditional chains.
 //       This may require adding another call to `fork()`!
 
-command* run_command (shell_parser, bool, bool, int, int);
+command* run_command (shell_parser, bool);
 void run_conditional (shell_parser sec);
-int run_pipeline (shell_parser sec);
 
 void run_list(shell_parser sec) {
     shell_parser line_parser(sec);
-    for (auto par = line_parser.first_conditional(); par; par.next_conditional()) {
-        run_conditional(par);
+    shell_parser condpar = line_parser.first_conditional();
+    while (condpar) {
+        run_conditional(condpar);
+        condpar.next_conditional();
     }
-    // for (auto par = line_parser.first_pipeline(); par; par.next_pipeline()) {
-    //     run_pipeline(par);
-    // }
 }
 
-int run_pipeline (shell_parser sec){  //HOW TO RUN IN PARALLEL
-    shell_parser line_parser(sec);
-    int pipeline_status = 1;
-
-    // we initialize a previous pipe
-    int prev_pipe[2] = {-1, -1};
-    std::vector<command*> commands; 
-    command* last_command = nullptr;
-
+void run_pipeline (shell_parser sec){
     // get the first command and see if its token is "|"
-    for (auto par = line_parser.first_command(); par; par.next_command()) {
-        // create a pipe if the op is |
-        int new_pipe[2];
-        if (par.op() == 4){
-            pipe(new_pipe);
-        }else{
-            new_pipe[0] = -1;
-            new_pipe[1] = -1;
-        }
 
-        // now we have to connect the previous pipe to the first and then run the pipe
-        int pipe_in = prev_pipe[0];
-        int pipe_out = new_pipe[1];
-        command* c = run_command(par, false, false, pipe_in, pipe_out);
+    // if so: connect the first command's ouput to the second command's input
 
-        // Store the command in the vector for later deletion
-        commands.push_back(c);
+    // wait for last command to complete before moving on - check run?
 
-        // close pipes that we are not using anymore
-        if (prev_pipe[0] != -1) close(prev_pipe[0]);
-        if (new_pipe[1] != -1) close(new_pipe[1]);
-        
-        // update prev pipes
-        prev_pipe[0] = new_pipe[0];
-        prev_pipe[1] = new_pipe[1];
-
-        // Track the last command for waiting at the end
-        last_command = c;
-
-    }
-
-    // Wait for the last command in the pipeline to complete
-    if (last_command && last_command->pid > 0) {
-        int status;
-        pid_t exited_pid = waitpid(last_command->pid, &status, 0);
-        assert(exited_pid == last_command->pid);
-
-        if (WIFEXITED(status)) {
-            last_command->exit_status = WEXITSTATUS(status);
-            pipeline_status = last_command->exit_status;
-        }
-    }
-
-    // Delete all commands in the pipeline
-    for (command* cmd : commands) {
-        delete cmd;
-    }
-
-    return pipeline_status;
 }
 
 
@@ -230,11 +154,11 @@ void run_conditional (shell_parser sec){
     shell_parser line_parser(sec);
     bool run_next = true;
     bool cumulative_status = false;
-    for (auto par = line_parser.first_pipeline(); par; par.next_pipeline()) {
-        int exit_status = -1;
+    for (auto par = line_parser.first_command(); par; par.next_command()) {
+        command*  last_command = nullptr;
         if (run_next){
-            exit_status = run_pipeline (par);
-            cumulative_status = (exit_status == 0);    
+            last_command = run_command(par, false);
+            cumulative_status = (last_command) && (last_command -> exit_status == 0);
         }
         // if &&, only run next command if cumulative command succesful
         if (par.op() == 5){
@@ -245,27 +169,19 @@ void run_conditional (shell_parser sec){
         }else{
             run_next = true;
         }
+        delete last_command; 
     }     
     
 }
 
-command* run_command (shell_parser sec, bool auto_delete = true, bool wait_for_completion = true, int pipe_in = -1, int pipe_out = -1){
+command* run_command (shell_parser sec, bool auto_delete = true){
     command* c = new command;
     auto tok = sec.first_token();
     while (tok) {
         c->args.push_back(tok.str());
         tok.next();
     }
-
-    c -> pipe_in = pipe_in;
-    c -> pipe_out = pipe_out;
-
-    if (wait_for_completion){
-        c->run(true);
-    }else{
-        c->run(false);
-    }
-    
+    c->run();
     if (auto_delete){
         delete c;
         return nullptr;

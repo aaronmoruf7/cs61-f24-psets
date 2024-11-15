@@ -252,3 +252,39 @@ void run_conditional (shell_parser sec){
     }     
     
 }
+
+
+void run_conditional (shell_parser sec){
+    shell_parser line_parser(sec);
+    bool run_next = true;
+    bool cumulative_status = false;
+    for (auto par = line_parser.first_command(); par; par.next_command()) {
+        command*  last_command = nullptr;
+        int exit_status = -1;
+        if (run_next){
+            if (par.op() == 4){
+                exit_status = run_pipeline (par);
+                cumulative_status = (exit_status == 0);
+
+            }else{
+                last_command = run_command(par, false, true, -1, -1);
+                if (last_command) {
+                    exit_status = last_command ? last_command->exit_status : -1;
+                    cumulative_status = (exit_status == 0);
+                    delete last_command;
+                }
+            }
+            
+        }
+        // if &&, only run next command if cumulative command succesful
+        if (par.op() == 5){
+            run_next = cumulative_status;
+        } // if ||, only run next command if cumulative command unsuccesful
+        else if(par.op() == 6){ 
+            run_next = !cumulative_status;
+        }else{
+            run_next = true;
+        }
+    }     
+    
+}
