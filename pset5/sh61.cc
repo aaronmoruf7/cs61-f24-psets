@@ -157,14 +157,25 @@ int run_pipeline (shell_parser sec);
 void run_list(shell_parser sec) {
     shell_parser line_parser(sec);
     for (auto par = line_parser.first_conditional(); par; par.next_conditional()) {
-        run_conditional(par);
+        // for background conditionals
+        if (par.op() == 3){
+            pid_t p = fork();
+            if (p == 0){
+                run_conditional(par);
+                _exit(0);
+            }else if (p > 0){
+                continue;
+            }else{
+                perror("fork failed");
+            }
+        }else{
+            run_conditional(par);
+        }
+        
     }
-    // for (auto par = line_parser.first_pipeline(); par; par.next_pipeline()) {
-    //     run_pipeline(par);
-    // }
 }
 
-int run_pipeline (shell_parser sec){  //HOW TO RUN IN PARALLEL
+int run_pipeline (shell_parser sec){
     shell_parser line_parser(sec);
     int pipeline_status = 1;
 
