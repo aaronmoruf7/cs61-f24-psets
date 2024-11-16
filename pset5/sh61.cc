@@ -19,10 +19,14 @@ struct command {
     int pipe_in = -1;
     int pipe_out = -1;
     int exit_status;
+    std :: string input_filename;
+    std :: string output_filename;
+    std :: string error_filename;
     command();
     ~command();
 
     void run(bool);
+    void redirection_helper(std::string, bool, bool, bool);
 };
 
 
@@ -66,6 +70,30 @@ command::~command() {
 //       Draw pictures!
 //    PHASE 7: Handle redirections.
 
+void command::redirection_helper(std::string filename, bool in, bool out, bool err) {
+    int fd = -1;
+    int channel;
+
+    if (in) {
+        fd = open(filename.c_str(), O_RDONLY);
+        channel = 0;  // Redirect to stdin
+    } else if (out) {
+        fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        channel = 1;  // Redirect to stdout
+    } else if (err) {
+        fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        channel = 2;  // Redirect to stderr
+    }
+
+    if (fd < 0) {
+        perror(filename.c_str());
+        _exit(1);
+    }
+
+    dup2(fd, channel);
+    close(fd);
+}
+
 void command::run(bool wait_for_completion = true) {
     assert(this->pid == -1);
     assert(this->args.size() > 0);
@@ -84,17 +112,27 @@ void command::run(bool wait_for_completion = true) {
     // within the child run execv using the array of args
     if (p == 0){
 
-        // redirect input to std in
-        if (this -> pipe_in != -1){
+        // redirection <
+        if (!this -> input_filename.empty()){
+            this -> redirection_helper (this -> input_filename, true, false, false);
+        }else if (this -> pipe_in != -1){
             dup2(this -> pipe_in, 0);
             close (this -> pipe_in);
         }
-
-        // redirect ouput to std out
-        if (this -> pipe_out != -1){
+        // redirection >
+        if (!this -> output_filename.empty()){
+            this -> redirection_helper (this -> output_filename, false, true, false);
+        }else if (this -> pipe_out != -1){
             dup2(this -> pipe_out, 1);
             close (this -> pipe_out);
         }
+        // redirection 2>
+        if (!this -> error_filename.empty()){
+            this -> redirection_helper (this -> error_filename, false, false, true);
+        }
+
+
+        
 
         // now we call execv because the environment is set up properly
         int r = execvp (c_args[0], c_args);
@@ -260,11 +298,31 @@ void run_conditional (shell_parser sec){
     
 }
 
+
 command* run_command (shell_parser sec, bool auto_delete = true, bool wait_for_completion = true, int pipe_in = -1, int pipe_out = -1){
     command* c = new command;
     auto tok = sec.first_token();
     while (tok) {
-        c->args.push_back(tok.str());
+        // check for redirects
+        if (std::string(tok.type_name()) == "TYPE_REDIRECT_OP"){
+            std::string redirect_symbol = tok.str();
+            tok.next();
+            if (tok && std::string(tok.type_name()) == "TYPE_NORMAL"){
+                std::string filename = tok.str();
+                if (redirect_symbol == "<"){
+                    c -> input_filename = filename;
+                }else if (redirect_symbol == ">"){
+                    c -> output_filename = filename;
+                }else if (redirect_symbol == "2>"){
+                    c -> error_filename = filename;
+                }
+            } else {
+                fprintf(stderr, "Missing filename for redirection\n");
+                break;
+            }
+        }else{
+            c->args.push_back(tok.str());
+        }
         tok.next();
     }
 
