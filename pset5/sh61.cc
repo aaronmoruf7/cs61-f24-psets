@@ -286,6 +286,15 @@ command* run_command (shell_parser sec, bool auto_delete = true, bool wait_for_c
     
 }
 
+void clean_up_zombies (){
+    int status;
+    pid_t p;
+
+    do{
+        p = waitpid(-1, &status, WNOHANG);
+    } while (p > 0);
+}
+
 
 int main(int argc, char* argv[]) {
     FILE* command_file = stdin;
@@ -347,7 +356,8 @@ int main(int argc, char* argv[]) {
         }
 
         // Handle zombie processes and/or interrupt requests
-        // Your code here!
+        clean_up_zombies ();
+        
     }
 
     return 0;
