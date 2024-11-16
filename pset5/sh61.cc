@@ -94,6 +94,8 @@ void command::redirection_helper(std::string filename, bool in, bool out, bool e
     close(fd);
 }
 
+// void handle_cd(command* c);
+
 void command::run(bool wait_for_completion = true) {
     assert(this->pid == -1);
     assert(this->args.size() > 0);
@@ -213,6 +215,9 @@ void run_list(shell_parser sec) {
     }
 }
 
+int handle_cd(command* c);
+
+
 int run_pipeline (shell_parser sec){
     shell_parser line_parser(sec);
     int pipeline_status = 1;
@@ -224,6 +229,7 @@ int run_pipeline (shell_parser sec){
 
     // get the first command and see if its token is "|"
     for (auto par = line_parser.first_command(); par; par.next_command()) {
+    
         // create a pipe if the op is |
         int new_pipe[2];
         if (par.op() == 4){
@@ -298,6 +304,27 @@ void run_conditional (shell_parser sec){
     
 }
 
+int handle_cd(command* c) {
+    // Check if a directory argument is provided
+    if (c->args.size() < 2) {
+        return 1;
+    }
+
+    // Apply error redirection if specified
+    if (!c->error_filename.empty()) {
+        c -> redirection_helper (c -> error_filename, false, false, true);
+    }
+
+    // Change the directory
+    const char* dir = c->args[1].c_str();
+    if (chdir(dir) < 0) {
+        perror("cd");
+        return 1;
+    }
+
+    return 0;  // Success
+}
+
 
 command* run_command (shell_parser sec, bool auto_delete = true, bool wait_for_completion = true, int pipe_in = -1, int pipe_out = -1){
     command* c = new command;
@@ -325,6 +352,15 @@ command* run_command (shell_parser sec, bool auto_delete = true, bool wait_for_c
         }
         tok.next();
     }
+
+    if (!c->args.empty() && c->args[0] == "cd") {
+        int status = handle_cd(c);
+        c -> exit_status = status;
+
+        if (auto_delete) delete c;
+        return nullptr;
+    }
+    
 
     c -> pipe_in = pipe_in;
     c -> pipe_out = pipe_out;
