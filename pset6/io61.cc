@@ -2,6 +2,7 @@
 #include <climits>
 #include <cerrno>
 #include <mutex>
+#include <thread>
 #include <shared_mutex>
 #include <condition_variable>
 #include <sys/types.h>
@@ -13,6 +14,7 @@
 
 // io61_file
 //    Data structure for io61 file wrappers.
+#define NO_OF_REGIONS 128
 
 struct io61_file {
     std::recursive_mutex mutex; // mutex for locking part of the file
@@ -31,8 +33,35 @@ struct io61_file {
     // Positioned mode
     std::atomic <bool> dirty = false;       // has cache been written?
     bool positioned = false;  // is cache in positioned mode?
+
+    std::condition_variable_any cv;
+
+    struct region_lock{
+        int locked = 0;
+        std::thread::id owner;
+    } regs[NO_OF_REGIONS];
 };
 
+// file_region - finds the region index of the current offset
+int file_region (io61_file* f, off_t off){
+    int region_size = io61_filesize(f)/NO_OF_REGIONS;
+    int region_index = off/region_size;
+
+    return region_index;
+}
+
+// may_overlap - returns true if the current region [off, off + len) overlaps with an already locked region
+bool may_overlap (io61_file* f, off_t off, off_t len ){
+    int r_start = file_region(f, off);
+    int r_end = file_region(f, off + len - 1);
+
+    for (int ri = r_start; ri <= r_end; ri ++){
+        if (f -> regs[ri].locked > 0 && f -> regs[ri].owner != std::this_thread::get_id()){
+            return true;
+        }
+    }
+    return false;
+}
 
 // io61_fdopen(fd, mode)
 //    Returns a new io61_file for file descriptor `fd`. `mode` is either
@@ -380,11 +409,22 @@ int io61_try_lock(io61_file* f, off_t off, off_t len, int locktype) {
         return 0;
     }
 
-    if (f -> mutex.try_lock()){
-        return 0;
+    std::unique_lock guard (f -> mutex);
+
+    if (may_overlap(f, off, len)){
+        return -1;
     }
 
-    return -1;
+    // account for locking
+    int r_start = file_region(f, off);
+    int r_end = file_region(f, off + len - 1);
+
+    for (int ri = r_start; ri <= r_end; ri ++){
+        ++f -> regs[ri].locked;
+        f -> regs[ri].owner = std::this_thread::get_id();
+    }
+
+    return 0;
 }
 
 
@@ -405,11 +445,25 @@ int io61_lock(io61_file* f, off_t off, off_t len, int locktype) {
     if (len == 0) {
         return 0;
     }
-    // The handout code polls using `io61_try_lock`.
-    while (!f -> mutex.try_lock()) {
+
+    std::unique_lock guard (f->mutex);
+
+    // block until mutex becomes available
+    while (may_overlap(f, off, len)){
+        f -> cv.wait(guard);
+    }
+
+    // account for lock
+    int r_start = file_region(f, off);
+    int r_end = file_region(f, off + len - 1);
+
+    for (int ri = r_start; ri <= r_end; ri ++){
+        ++f -> regs[ri].locked;
+        f -> regs[ri].owner = std::this_thread::get_id();
     }
 
     return 0;
+
 }
 
 
@@ -423,7 +477,18 @@ int io61_unlock(io61_file* f, off_t off, off_t len) {
     if (len == 0) {
         return 0;
     }
-    f -> mutex.unlock();
+
+    std::unique_lock guard (f -> mutex);
+
+    // account for unlock
+    int r_start = file_region(f, off);
+    int r_end = file_region(f, off +  len - 1);
+
+    for (int ri = r_start; ri <= r_end; ri ++){
+        --f -> regs[ri].locked;
+    }
+
+    f -> cv.notify_all();
     return 0;
 }
 
