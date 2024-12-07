@@ -14,7 +14,7 @@
 
 // io61_file
 //    Data structure for io61 file wrappers.
-#define NO_OF_REGIONS 128
+#define NO_OF_REGIONS 16
 
 struct io61_file {
     std::recursive_mutex mutex; // mutex for locking part of the file
@@ -44,7 +44,13 @@ struct io61_file {
 
 // file_region - finds the region index of the current offset
 int file_region (io61_file* f, off_t off){
-    int region_size = io61_filesize(f)/NO_OF_REGIONS;
+    int file_size = io61_filesize(f);
+    int region_size = file_size/NO_OF_REGIONS;
+
+    if (off < 0 || off >= file_size){
+        return -1;
+    }
+
     int region_index = off/region_size;
 
     return region_index;
@@ -108,6 +114,9 @@ static int io61_fill(io61_file* f);
 
 int io61_readc(io61_file* f) {
     assert(!f->positioned);
+
+    std::unique_lock guard(f->mutex);
+
     if (f->pos_tag == f->end_tag) {
         io61_fill(f);
         if (f->pos_tag == f->end_tag) {
@@ -133,6 +142,9 @@ int io61_readc(io61_file* f) {
 ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
     assert(!f->positioned);
     size_t nread = 0;
+
+    std::unique_lock guard(f->mutex);
+
     while (nread != sz) {
         if (f->pos_tag == f->end_tag) {
             int r = io61_fill(f);
@@ -158,6 +170,9 @@ ssize_t io61_read(io61_file* f, unsigned char* buf, size_t sz) {
 
 int io61_writec(io61_file* f, int c) {
     assert(!f->positioned);
+    
+    std::unique_lock guard(f->mutex);
+
     if (f->pos_tag == f->tag + f->cbufsz) {
         int r = io61_flush(f);
         if (r == -1) {
@@ -182,6 +197,9 @@ int io61_writec(io61_file* f, int c) {
 ssize_t io61_write(io61_file* f, const unsigned char* buf, size_t sz) {
     assert(!f->positioned);
     size_t nwritten = 0;
+
+    std::unique_lock guard(f->mutex);
+
     while (nwritten != sz) {
         if (f->end_tag == f->tag + f->cbufsz) {
             int r = io61_flush(f);
@@ -216,6 +234,7 @@ static int io61_flush_dirty_positioned(io61_file* f);
 static int io61_flush_clean(io61_file* f);
 
 int io61_flush(io61_file* f) {
+    std::unique_lock guard(f->mutex);
     if (f->dirty && f->positioned) {
         return io61_flush_dirty_positioned(f);
     } else if (f->dirty) {
@@ -231,6 +250,7 @@ int io61_flush(io61_file* f) {
 //    Returns 0 on success and -1 on failure.
 
 int io61_seek(io61_file* f, off_t off) {
+    std::unique_lock guard(f->mutex);
     int r = io61_flush(f);
     if (r == -1) {
         return -1;
@@ -254,6 +274,9 @@ int io61_seek(io61_file* f, off_t off) {
 static int io61_fill(io61_file* f) {
     assert(f->tag == f->end_tag && f->pos_tag == f->end_tag);
     ssize_t nr;
+
+    std::unique_lock guard(f->mutex);
+
     while (true) {
         nr = read(f->fd, f->cbuf, f->cbufsz);
         if (nr >= 0) {
@@ -329,8 +352,8 @@ static int io61_flush_clean(io61_file* f) {
 
 static int io61_pfill(io61_file* f, off_t off);
 
-ssize_t io61_pread(io61_file* f, unsigned char* buf, size_t sz,
-                   off_t off) {
+ssize_t io61_pread(io61_file* f, unsigned char* buf, size_t sz,off_t off) {
+    std::unique_lock guard(f->mutex);
     if (!f->positioned || off < f->tag || off >= f->end_tag) {
         if (io61_pfill(f, off) == -1) {
             return -1;
@@ -350,8 +373,8 @@ ssize_t io61_pread(io61_file* f, unsigned char* buf, size_t sz,
 //    This function can only be called when `f` was opened in read/write
 //    more (O_RDWR).
 
-ssize_t io61_pwrite(io61_file* f, const unsigned char* buf, size_t sz,
-                    off_t off) {
+ssize_t io61_pwrite(io61_file* f, const unsigned char* buf, size_t sz, off_t off) {
+    std::unique_lock guard(f->mutex);
     if (!f->positioned || off < f->tag || off >= f->end_tag) {
         if (io61_pfill(f, off) == -1) {
             return -1;
@@ -371,6 +394,9 @@ ssize_t io61_pwrite(io61_file* f, const unsigned char* buf, size_t sz,
 
 static int io61_pfill(io61_file* f, off_t off) {
     assert(f->mode == O_RDWR);
+
+    std::unique_lock guard(f->mutex);
+
     if (f->dirty && io61_flush(f) == -1) {
         return -1;
     }
